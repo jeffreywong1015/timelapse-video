@@ -10,6 +10,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from googleapiclient.errors import HttpError
+from PIL import Image
 
 # Configuration - Get from environment variables
 SCOPES = ['https://www.googleapis.com/auth/drive']
@@ -99,8 +100,9 @@ def get_folder_ids(service):
     return image_folder_id, hourly_folder_id, daily_folder_id, weekly_folder_id
 
 def get_hourly_video_info(now):
-    start_time = (now - timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-    end_time = start_time + timedelta(hours=1)
+    # Process the previous complete hour
+    end_time = now.replace(minute=0, second=0, microsecond=0)
+    start_time = end_time - timedelta(hours=1)
     video_name = f"timelapse_hour_{end_time.strftime('%Y%m%d_%H')}.mp4"
     return start_time, end_time, video_name, 250  # 250ms per frame
 
@@ -186,10 +188,6 @@ def download_images(service, image_folder_id, start_time, end_time, temp_dir):
         logger.error(f"Error downloading images: {str(e)}")
         return []
 
-from PIL import Image
-
-logger = logging.getLogger(__name__)
-
 def is_valid_image(path):
     try:
         with Image.open(path) as img:
@@ -206,33 +204,50 @@ def create_mp4(image_paths, output_mp4, frame_duration):
             logger.warning("No valid images provided for MP4 creation")
             return False
         
-        num_images = len(valid_images)
+        # Standardize image sizes
+        with Image.open(valid_images[0]) as img:
+            target_size = img.size  # Use first image’s size as reference
+        resized_images = []
+        for path in valid_images:
+            with Image.open(path) as img:
+                if img.size != target_size:
+                    img = img.resize(target_size, Image.Resampling.LANCZOS)
+                    new_path = path.replace(".jpg", "_resized.jpg")
+                    img.save(new_path)
+                    resized_images.append(new_path)
+                else:
+                    resized_images.append(path)
+        
+        # Optionally limit images for testing API limits
+        # resized_images = resized_images[:10]  # Uncomment to test with 10 images
+        
+        num_images = len(resized_images)
         logger.info(f"Creating MP4 with {num_images} images ({frame_duration}ms per frame)")
         
         # Generate list.txt
         list_content = ""
-        for path in valid_images:
+        for path in resized_images:
             filename = os.path.basename(path)
             list_content += f"file '{filename}'\nduration {frame_duration / 1000}\n"
         
-        temp_dir = os.path.dirname(valid_images[0]) if valid_images else "."
+        temp_dir = os.path.dirname(resized_images[0]) if resized_images else "."
         list_path = os.path.join(temp_dir, "list.txt")
         with open(list_path, "w") as f:
             f.write(list_content)
-        logger.info(f"Generated list.txt:\n{list_content}")  # Log for debugging
+        logger.info(f"Generated list.txt:\n{list_content}")
         
         # Prepare files for upload
         files = {"list.txt": open(list_path, "rb")}
-        for path in valid_images:
+        for path in resized_images:
             filename = os.path.basename(path)
             files[filename] = open(path, "rb")
         
-        # FFmpeg command with adjusted frame rate
+        # FFmpeg command without input framerate
         command = {
             "inputs": [
                 {
                     "file": "list.txt",
-                    "options": ["-f", "concat", "-safe", "0", "-framerate", "4"]
+                    "options": ["-f", "concat", "-safe", "0"]
                 }
             ],
             "outputs": [
@@ -245,7 +260,7 @@ def create_mp4(image_paths, output_mp4, frame_duration):
         files["command"] = (None, json.dumps(command))
         
         headers = {
-            'Authorization': 'Basic bG5JZDYwSVUzRnBnbWR3cHViR3I6ODlmZjA5YmZkNzRjYWY4ZGY3ZGU4NWEw'  # Replace with your actual token
+            'Authorization': 'Basic <your-auth-token>'  # Replace with your actual token
         }
         
         api_url = "https://api.ffmpeg-api.com/ffmpeg/run"
@@ -261,7 +276,7 @@ def create_mp4(image_paths, output_mp4, frame_duration):
                 logger.info(f"Created MP4: {output_mp4} ({os.path.getsize(output_mp4)/1024:.1f} KB)")
                 return True
             else:
-                logger.error(f"FFmpeg API failed: {result.get('error')}")
+                logger.error(f"FFmpeg API failed: {json.dumps(result, indent=2)}")
                 return False
         else:
             logger.error(f"API request failed with status {response.status_code}: {response.text}")
@@ -275,7 +290,6 @@ def create_mp4(image_paths, output_mp4, frame_duration):
         for key, file_obj in files.items():
             if key != "command" and hasattr(file_obj, "close"):
                 file_obj.close()
-
 
 def upload_video(service, folder_id, video_path, video_name):
     try:
@@ -336,6 +350,7 @@ def process_video_type(service, video_type, get_info_func, image_folder_id, subf
         # Get video info
         start_time, end_time, video_name, frame_duration = get_info_func(now)
         folder_id = subfolder_ids[video_type]
+        logger.info(f"Processing {video_type} video for period {start_time} to {end_time}")
         
         # Skip if video exists
         if video_exists(service, folder_id, video_name):
