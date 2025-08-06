@@ -5,12 +5,11 @@ import logging
 from datetime import datetime, timedelta
 import pytz
 import tempfile
-import shutil
+import requests
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from googleapiclient.errors import HttpError
-from PIL import Image
 
 # Configuration - Get from environment variables
 SCOPES = ['https://www.googleapis.com/auth/drive']
@@ -19,6 +18,13 @@ FOLDER_B_NAME = os.environ.get('FOLDER_B_NAME', '10botics.com')
 FOLDER_C_NAME = os.environ.get('FOLDER_C_NAME', 'cam1')
 IMAGE_FOLDER_NAME = os.environ.get('IMAGE_FOLDER_NAME', 'image')
 TIMELAPSE_FOLDER_NAME = os.environ.get('TIMELAPSE_FOLDER_NAME', 'timelapse')
+
+# Image count thresholds
+IMAGE_THRESHOLDS = {
+    'hourly': 60,
+    'daily': 720,
+    'weekly': 1440
+}
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -95,13 +101,13 @@ def get_folder_ids(service):
 def get_hourly_video_info(now):
     start_time = (now - timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
     end_time = start_time + timedelta(hours=1)
-    video_name = f"timelapse_hour_{end_time.strftime('%Y%m%d_%H')}.gif"
+    video_name = f"timelapse_hour_{end_time.strftime('%Y%m%d_%H')}.mp4"
     return start_time, end_time, video_name, 250  # 250ms per frame
 
 def get_daily_video_info(now):
     end_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
     start_time = end_time - timedelta(days=1)
-    video_name = f"timelapse_day_{end_time.strftime('%Y%m%d')}.gif"
+    video_name = f"timelapse_day_{end_time.strftime('%Y%m%d')}.mp4"
     return start_time, end_time, video_name, 100  # 100ms per frame
 
 def get_weekly_video_info(now):
@@ -110,7 +116,7 @@ def get_weekly_video_info(now):
     end_time = (now - timedelta(days=days_to_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
     start_time = end_time - timedelta(days=7)
     year, week, _ = end_time.isocalendar()
-    video_name = f"timelapse_week_{year}{week:02d}.gif"
+    video_name = f"timelapse_week_{year}{week:02d}.mp4"
     return start_time, end_time, video_name, 50  # 50ms per frame
 
 def video_exists(service, folder_id, video_name):
@@ -126,6 +132,22 @@ def video_exists(service, folder_id, video_name):
     except HttpError as e:
         logger.error(f"Error checking video existence for {video_name}: {str(e)}")
         return False
+
+def count_images(service, image_folder_id, start_time, end_time):
+    try:
+        start_utc = start_time.astimezone(pytz.utc).isoformat().replace('+00:00', 'Z')
+        end_utc = end_time.astimezone(pytz.utc).isoformat().replace('+00:00', 'Z')
+        query = f"'{image_folder_id}' in parents and createdTime >= '{start_utc}' and createdTime < '{end_utc}' and (mimeType='image/jpeg' or mimeType='image/png' or mimeType='image/jpg')"
+        results = service.files().list(
+            q=query,
+            fields="files(id)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute()
+        return len(results.get('files', []))
+    except HttpError as e:
+        logger.error(f"Error counting images: {str(e)}")
+        return 0
 
 def download_images(service, image_folder_id, start_time, end_time, temp_dir):
     try:
@@ -164,45 +186,40 @@ def download_images(service, image_folder_id, start_time, end_time, temp_dir):
         logger.error(f"Error downloading images: {str(e)}")
         return []
 
-def create_gif(image_paths, output_gif, frame_duration):
-    if not image_paths:
-        logger.warning("No images provided for GIF creation")
-        return False
+def create_mp4(image_paths, output_mp4, frame_duration):
     try:
-        logger.info(f"Creating GIF with {len(image_paths)} images ({frame_duration}ms per frame)")
-        
-        # Open all images
-        images = []
-        for path in image_paths:
-            try:
-                with Image.open(path) as img:
-                    images.append(img.copy())
-            except Exception as e:
-                logger.warning(f"Error processing {path}: {str(e)}")
-        
-        if not images:
-            logger.error("No valid images to create GIF")
+        if not image_paths:
+            logger.warning("No images provided for MP4 creation")
             return False
-            
-        # Save as animated GIF
-        images[0].save(
-            output_gif,
-            save_all=True,
-            append_images=images[1:],
-            duration=frame_duration,
-            loop=0,
-            optimize=True
-        )
-        logger.info(f"Created GIF: {output_gif} ({os.path.getsize(output_gif)/1024:.1f} KB)")
-        return True
+        
+        logger.info(f"Creating MP4 with {len(image_paths)} images ({frame_duration}ms per frame)")
+        
+        # Prepare files for upload to FFmpeg API
+        files = [('images', (os.path.basename(path), open(path, 'rb'), 'image/jpeg')) for path in image_paths]
+        data = {
+            'frame_duration': frame_duration / 1000  # Convert to seconds
+        }
+        
+        # Call FFmpeg API (Note: Actual API may require specific formatting; adjust as per documentation)
+        api_url = "https://api.ffmpeg-api.com/ffmpeg/run"
+        response = requests.post(api_url, files=files, data=data)
+        
+        if response.status_code == 200:
+            with open(output_mp4, 'wb') as f:
+                f.write(response.content)
+            logger.info(f"Created MP4: {output_mp4} ({os.path.getsize(output_mp4)/1024:.1f} KB)")
+            return True
+        else:
+            logger.error(f"FFmpeg API failed: {response.text}")
+            return False
     except Exception as e:
-        logger.error(f"Error creating GIF: {str(e)}")
+        logger.error(f"Error creating MP4: {str(e)}")
         return False
 
 def upload_video(service, folder_id, video_path, video_name):
     try:
         file_metadata = {'name': video_name, 'parents': [folder_id]}
-        media = MediaFileUpload(video_path, mimetype='image/gif')
+        media = MediaFileUpload(video_path, mimetype='video/mp4')
         service.files().create(
             body=file_metadata,
             media_body=media,
@@ -263,7 +280,13 @@ def process_video_type(service, video_type, get_info_func, image_folder_id, subf
         if video_exists(service, folder_id, video_name):
             logger.info(f"{video_type} video {video_name} already exists, skipping")
             return True
-            
+        
+        # Check image count against threshold
+        image_count = count_images(service, image_folder_id, start_time, end_time)
+        if image_count < IMAGE_THRESHOLDS[video_type]:
+            logger.info(f"Insufficient images for {video_type} video: {image_count} < {IMAGE_THRESHOLDS[video_type]}")
+            return False
+        
         # Create temp directory
         with tempfile.TemporaryDirectory() as temp_dir:
             # Download images
@@ -271,13 +294,13 @@ def process_video_type(service, video_type, get_info_func, image_folder_id, subf
             if not image_paths:
                 logger.warning(f"No images found for {video_type} video {video_name}")
                 return False
-                
-            # Create GIF
+            
+            # Create MP4
             output_path = os.path.join(temp_dir, video_name)
-            if not create_gif(image_paths, output_path, frame_duration):
+            if not create_mp4(image_paths, output_path, frame_duration):
                 logger.error(f"Failed to create {video_type} video {video_name}")
                 return False
-                
+            
             # Upload to Drive
             upload_video(service, folder_id, output_path, video_name)
             
@@ -287,9 +310,9 @@ def process_video_type(service, video_type, get_info_func, image_folder_id, subf
             elif video_type == 'weekly':
                 delete_videos_in_folder(service, subfolder_ids['daily'])
                 delete_old_images(service, image_folder_id, end_time)
-                
-        return True
         
+        return True
+    
     except Exception as e:
         logger.error(f"Error processing {video_type} video: {str(e)}")
         return False
@@ -306,19 +329,16 @@ def main():
             'daily': daily_folder_id,
             'weekly': weekly_folder_id
         }
-
         video_processors = [
             ('hourly', get_hourly_video_info),
             ('daily', get_daily_video_info),
             ('weekly', get_weekly_video_info)
         ]
-
         # Process each video type
         for video_type, get_info in video_processors:
             logger.info(f"Processing {video_type} video...")
             success = process_video_type(service, video_type, get_info, image_folder_id, subfolder_ids)
             logger.info(f"{video_type} processing {'succeeded' if success else 'failed'}")
-
     except Exception as e:
         logger.error(f"Critical error: {str(e)}")
         import traceback
