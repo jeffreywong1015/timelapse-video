@@ -2,7 +2,7 @@ name: Timelapse Creator
 
 on:
   schedule:
-    - cron: '*/10 * * * *'  # Runs every 5 minutes
+    - cron: '*/1 * * * *'  # Runs every 5 minutes
   workflow_dispatch:  # Allow manual runs
 
 jobs:
