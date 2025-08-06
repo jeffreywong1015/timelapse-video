@@ -204,7 +204,7 @@ def create_mp4(image_paths, output_mp4, frame_duration):
         
         # Add the API key in the headers
         headers = {
-            'Authorization': 'Bearer bG5JZDYwSVUzRnBnbWR3cHViR3I6ODlmZjA5YmZkNzRjYWY4ZGY3ZGU4NWEw'
+            'Authorization': 'Basic bG5JZDYwSVUzRnBnbWR3cHViR3I6ODlmZjA5YmZkNzRjYWY4ZGY3ZGU4NWEw'
         }
         
         # Make the API request
