@@ -260,7 +260,7 @@ def create_mp4(image_paths, output_mp4, frame_duration):
         files["command"] = (None, json.dumps(command))
         
         headers = {
-            'Authorization': 'Basic <your-auth-token>'  # Replace with your actual token
+            'Authorization': 'Basic bG5JZDYwSVUzRnBnbWR3cHViR3I6ODlmZjA5YmZkNzRjYWY4ZGY3ZGU4NWEw'  # Replace with your actual token
         }
         
         api_url = "https://api.ffmpeg-api.com/ffmpeg/run"
