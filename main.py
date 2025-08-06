@@ -186,6 +186,8 @@ def download_images(service, image_folder_id, start_time, end_time, temp_dir):
         logger.error(f"Error downloading images: {str(e)}")
         return []
 
+logger = logging.getLogger(__name__)
+
 def create_mp4(image_paths, output_mp4, frame_duration):
     try:
         if not image_paths:
@@ -194,15 +196,20 @@ def create_mp4(image_paths, output_mp4, frame_duration):
         
         logger.info(f"Creating MP4 with {len(image_paths)} images ({frame_duration}ms per frame)")
         
-        # Prepare files for upload to FFmpeg API
+        # Prepare files for upload
         files = [('images', (os.path.basename(path), open(path, 'rb'), 'image/jpeg')) for path in image_paths]
         data = {
-            'frame_duration': frame_duration / 1000  # Convert to seconds
+            'frame_duration': frame_duration / 1000  # Convert ms to seconds
         }
         
-        # Call FFmpeg API (Note: Actual API may require specific formatting; adjust as per documentation)
+        # Add the API key in the headers
+        headers = {
+            'Authorization': 'Bearer bG5JZDYwSVUzRnBnbWR3cHViR3I6ODlmZjA5YmZkNzRjYWY4ZGY3ZGU4NWEw'
+        }
+        
+        # Make the API request
         api_url = "https://api.ffmpeg-api.com/ffmpeg/run"
-        response = requests.post(api_url, files=files, data=data)
+        response = requests.post(api_url, files=files, data=data, headers=headers)
         
         if response.status_code == 200:
             with open(output_mp4, 'wb') as f:
