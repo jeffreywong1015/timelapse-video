@@ -194,34 +194,84 @@ def create_mp4(image_paths, output_mp4, frame_duration):
             logger.warning("No images provided for MP4 creation")
             return False
         
-        logger.info(f"Creating MP4 with {len(image_paths)} images ({frame_duration}ms per frame)")
+        num_images = len(image_paths)
+        logger.info(f"Creating MP4 with {num_images} images ({frame_duration}ms per frame)")
         
-        # Prepare files for upload
-        files = [('images', (os.path.basename(path), open(path, 'rb'), 'image/jpeg')) for path in image_paths]
-        data = {
-            'frame_duration': frame_duration / 1000  # Convert ms to seconds
+        # Step 1: Generate list.txt for the concat demuxer
+        list_content = ""
+        for path in image_paths:
+            filename = os.path.basename(path)  # e.g., 0001.jpg
+            list_content += f"file '{filename}'\nduration {frame_duration / 1000}\n"
+        
+        # Assuming image_paths are in a temp directory; adjust temp_dir as needed
+        temp_dir = os.path.dirname(image_paths[0]) if image_paths else "."
+        list_path = os.path.join(temp_dir, "list.txt")
+        with open(list_path, "w") as f:
+            f.write(list_content)
+        
+        # Step 2: Prepare files for upload
+        files = {
+            "list.txt": open(list_path, "rb"),
+        }
+        for path in image_paths:
+            filename = os.path.basename(path)
+            files[filename] = open(path, "rb")
+        
+        # Step 3: Define the FFmpeg command
+        command = {
+            "inputs": [
+                {
+                    "file": "list.txt",
+                    "options": ["-f", "concat", "-safe", "0"]
+                }
+            ],
+            "outputs": [
+                {
+                    "file": "output.mp4",
+                    "options": ["-c:v", "libx264", "-r", "24", "-pix_fmt", "yuv420p"]
+                }
+            ]
         }
         
-        # Add the API key in the headers
+        # Add command as a form field
+        files["command"] = (None, json.dumps(command))
+        
+        # Step 4: Set headers with your Authorization key
         headers = {
             'Authorization': 'Basic bG5JZDYwSVUzRnBnbWR3cHViR3I6ODlmZjA5YmZkNzRjYWY4ZGY3ZGU4NWEw'
         }
         
-        # Make the API request
+        # Step 5: Send the API request
         api_url = "https://api.ffmpeg-api.com/ffmpeg/run"
-        response = requests.post(api_url, files=files, data=data, headers=headers)
+        response = requests.post(api_url, files=files, headers=headers)
         
+        # Step 6: Handle the response
         if response.status_code == 200:
-            with open(output_mp4, 'wb') as f:
-                f.write(response.content)
-            logger.info(f"Created MP4: {output_mp4} ({os.path.getsize(output_mp4)/1024:.1f} KB)")
-            return True
+            result = response.json()
+            if result.get("ok"):
+                output_url = result["result"][0]["file"]
+                # Download the output file
+                output_response = requests.get(output_url)
+                with open(output_mp4, "wb") as f:
+                    f.write(output_response.content)
+                logger.info(f"Created MP4: {output_mp4} ({os.path.getsize(output_mp4)/1024:.1f} KB)")
+                return True
+            else:
+                logger.error(f"FFmpeg API failed: {result.get('error')}")
+                return False
         else:
-            logger.error(f"FFmpeg API failed: {response.text}")
+            logger.error(f"API request failed with status {response.status_code}: {response.text}")
             return False
+    
     except Exception as e:
         logger.error(f"Error creating MP4: {str(e)}")
         return False
+    
+    finally:
+        # Clean up file handles
+        for key, file_obj in files.items():
+            if key != "command" and hasattr(file_obj, "close"):
+                file_obj.close()
 
 def upload_video(service, folder_id, video_path, video_name):
     try:
