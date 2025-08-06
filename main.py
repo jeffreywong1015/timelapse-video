@@ -92,7 +92,6 @@ def get_folder_ids(service):
     image_folder_id = find_or_create_folder(service, folder_c_id, IMAGE_FOLDER_NAME)
     timelapse_folder_id = find_or_create_folder(service, folder_c_id, TIMELAPSE_FOLDER_NAME)
     
-    # Create subfolders for hourly, daily, and weekly videos
     hourly_folder_id = find_or_create_folder(service, timelapse_folder_id, 'hourly')
     daily_folder_id = find_or_create_folder(service, timelapse_folder_id, 'daily')
     weekly_folder_id = find_or_create_folder(service, timelapse_folder_id, 'weekly')
@@ -100,10 +99,11 @@ def get_folder_ids(service):
     return image_folder_id, hourly_folder_id, daily_folder_id, weekly_folder_id
 
 def get_hourly_video_info(now):
-    # Process the previous complete hour
+    """Process the previous complete hour"""
     end_time = now.replace(minute=0, second=0, microsecond=0)
     start_time = end_time - timedelta(hours=1)
     video_name = f"timelapse_hour_{end_time.strftime('%Y%m%d_%H')}.mp4"
+    logger.info(f"Calculated hourly period: {start_time} to {end_time}")
     return start_time, end_time, video_name, 250  # 250ms per frame
 
 def get_daily_video_info(now):
@@ -211,6 +211,7 @@ def create_mp4(image_paths, output_mp4, frame_duration):
         for path in valid_images:
             with Image.open(path) as img:
                 if img.size != target_size:
+                    logger.info(f"Resizing {path} from {img.size} to {target_size}")
                     img = img.resize(target_size, Image.Resampling.LANCZOS)
                     new_path = path.replace(".jpg", "_resized.jpg")
                     img.save(new_path)
@@ -242,7 +243,7 @@ def create_mp4(image_paths, output_mp4, frame_duration):
             filename = os.path.basename(path)
             files[filename] = open(path, "rb")
         
-        # FFmpeg command without input framerate
+        # FFmpeg command with scaling filter
         command = {
             "inputs": [
                 {
@@ -253,7 +254,7 @@ def create_mp4(image_paths, output_mp4, frame_duration):
             "outputs": [
                 {
                     "file": "output.mp4",
-                    "options": ["-c:v", "libx264", "-r", "4", "-pix_fmt", "yuv420p"]
+                    "options": ["-c:v", "libx264", "-r", "4", "-vf", "scale=1920:1080", "-pix_fmt", "yuv420p"]
                 }
             ]
         }
