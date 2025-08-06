@@ -186,71 +186,75 @@ def download_images(service, image_folder_id, start_time, end_time, temp_dir):
         logger.error(f"Error downloading images: {str(e)}")
         return []
 
+from PIL import Image
+
 logger = logging.getLogger(__name__)
+
+def is_valid_image(path):
+    try:
+        with Image.open(path) as img:
+            img.verify()
+        return True
+    except Exception:
+        return False
 
 def create_mp4(image_paths, output_mp4, frame_duration):
     try:
-        if not image_paths:
-            logger.warning("No images provided for MP4 creation")
+        # Filter valid images
+        valid_images = [path for path in image_paths if is_valid_image(path)]
+        if not valid_images:
+            logger.warning("No valid images provided for MP4 creation")
             return False
         
-        num_images = len(image_paths)
+        num_images = len(valid_images)
         logger.info(f"Creating MP4 with {num_images} images ({frame_duration}ms per frame)")
         
-        # Step 1: Generate list.txt for the concat demuxer
+        # Generate list.txt
         list_content = ""
-        for path in image_paths:
-            filename = os.path.basename(path)  # e.g., 0001.jpg
+        for path in valid_images:
+            filename = os.path.basename(path)
             list_content += f"file '{filename}'\nduration {frame_duration / 1000}\n"
         
-        # Assuming image_paths are in a temp directory; adjust temp_dir as needed
-        temp_dir = os.path.dirname(image_paths[0]) if image_paths else "."
+        temp_dir = os.path.dirname(valid_images[0]) if valid_images else "."
         list_path = os.path.join(temp_dir, "list.txt")
         with open(list_path, "w") as f:
             f.write(list_content)
+        logger.info(f"Generated list.txt:\n{list_content}")  # Log for debugging
         
-        # Step 2: Prepare files for upload
-        files = {
-            "list.txt": open(list_path, "rb"),
-        }
-        for path in image_paths:
+        # Prepare files for upload
+        files = {"list.txt": open(list_path, "rb")}
+        for path in valid_images:
             filename = os.path.basename(path)
             files[filename] = open(path, "rb")
         
-        # Step 3: Define the FFmpeg command
+        # FFmpeg command with adjusted frame rate
         command = {
             "inputs": [
                 {
                     "file": "list.txt",
-                    "options": ["-f", "concat", "-safe", "0"]
+                    "options": ["-f", "concat", "-safe", "0", "-framerate", "4"]
                 }
             ],
             "outputs": [
                 {
                     "file": "output.mp4",
-                    "options": ["-c:v", "libx264", "-r", "24", "-pix_fmt", "yuv420p"]
+                    "options": ["-c:v", "libx264", "-r", "4", "-pix_fmt", "yuv420p"]
                 }
             ]
         }
-        
-        # Add command as a form field
         files["command"] = (None, json.dumps(command))
         
-        # Step 4: Set headers with your Authorization key
         headers = {
-            'Authorization': 'Basic bG5JZDYwSVUzRnBnbWR3cHViR3I6ODlmZjA5YmZkNzRjYWY4ZGY3ZGU4NWEw'
+            'Authorization': 'Basic <your-auth-token>'  # Replace with your actual token
         }
         
-        # Step 5: Send the API request
         api_url = "https://api.ffmpeg-api.com/ffmpeg/run"
         response = requests.post(api_url, files=files, headers=headers)
         
-        # Step 6: Handle the response
         if response.status_code == 200:
             result = response.json()
             if result.get("ok"):
                 output_url = result["result"][0]["file"]
-                # Download the output file
                 output_response = requests.get(output_url)
                 with open(output_mp4, "wb") as f:
                     f.write(output_response.content)
@@ -268,10 +272,10 @@ def create_mp4(image_paths, output_mp4, frame_duration):
         return False
     
     finally:
-        # Clean up file handles
         for key, file_obj in files.items():
             if key != "command" and hasattr(file_obj, "close"):
                 file_obj.close()
+
 
 def upload_video(service, folder_id, video_path, video_name):
     try:
